@@ -77,3 +77,10 @@ clean: ## Limpiar archivos de coverage generados
 	@echo "$(YELLOW)Cleaning coverage files...$(NC)"
 	@rm -f $(COVERAGE_OUT) $(COVERAGE_HTML) index.html
 	@echo "$(GREEN)✓ Cleaned$(NC)"
+
+release: ## Crear y publicar una nueva versión (uso: make release VERSION=1.2.3)
+	@if [ -z "$(VERSION)" ]; then \
+		echo "$(RED)Error: VERSION is required. Usage: make release VERSION=1.2.3$(NC)"; \
+		exit 1; \
+	fi
+	@./scripts/new-version $(VERSION)
