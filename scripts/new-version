@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# new-version — create and push a semver git tag for rkit
+# Usage: new-version <MAJOR.MINOR.PATCH>
+
+set -euo pipefail
+
+# ─── Colors ───────────────────────────────────────────────────────────────────
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+NC='\033[0m'
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+info()    { echo -e "${CYAN}ℹ ${NC}$*"; }
+success() { echo -e "${GREEN}✓ ${NC}$*"; }
+warn()    { echo -e "${YELLOW}⚠ ${NC}$*"; }
+error()   { echo -e "${RED}✗ ${NC}$*" >&2; }
+die()     { error "$*"; exit 1; }
+
+confirm() {
+  local prompt="$1"
+  local answer
+  echo -e "${YELLOW}${prompt}${NC} [y/N] " >&2
+  read -r answer </dev/tty
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+# ─── Argument validation ───────────────────────────────────────────────────────
+if [[ $# -ne 1 ]]; then
+  die "Usage: new-version <MAJOR.MINOR.PATCH>  (e.g. new-version 3.4.2)"
+fi
+
+RAW_VERSION="$1"
+# Strip a leading 'v' if the user included one
+VERSION="${RAW_VERSION#v}"
+
+# Validate semver format
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  die "Invalid version '${VERSION}'. Expected format: MAJOR.MINOR.PATCH (e.g. 3.4.2)"
+fi
+
+TAG="v${VERSION}"
+
+# ─── Locate repo root ──────────────────────────────────────────────────────────
+REPO_ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel 2>/dev/null)" \
+  || die "Not inside a git repository."
+
+cd "$REPO_ROOT"
+info "Repository: ${BOLD}${REPO_ROOT}${NC}"
+echo ""
+
+# ─── Check for a configured remote ────────────────────────────────────────────
+REMOTE=$(git remote 2>/dev/null | head -1)
+if [[ -z "$REMOTE" ]]; then
+  die "No git remote configured. Add one before releasing."
+fi
+REMOTE_URL=$(git remote get-url "$REMOTE")
+info "Remote: ${BOLD}${REMOTE}${NC} → ${REMOTE_URL}"
+echo ""
+
+# ─── 1. Uncommitted changes ───────────────────────────────────────────────────
+DIRTY=$(git status --porcelain)
+if [[ -n "$DIRTY" ]]; then
+  warn "There are uncommitted changes in the working tree:"
+  echo ""
+  while IFS= read -r line; do
+    echo -e "    ${YELLOW}${line}${NC}"
+  done <<< "$DIRTY"
+  echo ""
+  warn "These files will NOT be included in the tag."
+  confirm "Continue anyway?" || die "Aborted. Commit or stash your changes first."
+  echo ""
+fi
+
+# ─── 2. Unpushed commits ──────────────────────────────────────────────────────
+UPSTREAM=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)
+if [[ -n "$UPSTREAM" ]]; then
+  UNPUSHED=$(git log "${UPSTREAM}..HEAD" --oneline 2>/dev/null)
+  if [[ -n "$UNPUSHED" ]]; then
+    warn "The following commits have NOT been pushed to ${REMOTE}:"
+    echo ""
+    while IFS= read -r line; do
+      echo -e "    ${YELLOW}${line}${NC}"
+    done <<< "$UNPUSHED"
+    echo ""
+    warn "The tag will point to a commit that is not yet on the remote."
+    confirm "Continue anyway?" || die "Aborted. Push your commits first: git push ${REMOTE}"
+    echo ""
+  fi
+else
+  warn "No upstream tracking branch found. Cannot verify whether commits are pushed."
+  echo ""
+fi
+
+# ─── 3. Local tag collision ───────────────────────────────────────────────────
+LOCAL_TAG=$(git tag -l "$TAG")
+if [[ -n "$LOCAL_TAG" ]]; then
+  EXISTING_COMMIT=$(git rev-list -n 1 "$TAG")
+  warn "Tag ${BOLD}${TAG}${NC} already exists locally → commit ${EXISTING_COMMIT:0:10}"
+  confirm "Overwrite local tag ${TAG}?" || die "Aborted."
+  git tag -d "$TAG"
+  echo ""
+fi
+
+# ─── 4. Remote tag collision ──────────────────────────────────────────────────
+REMOTE_TAG=$(git ls-remote --tags "$REMOTE" "refs/tags/${TAG}" 2>/dev/null | awk '{print $1}')
+if [[ -n "$REMOTE_TAG" ]]; then
+  warn "Tag ${BOLD}${TAG}${NC} already exists on remote ${REMOTE} → commit ${REMOTE_TAG:0:10}"
+  confirm "Force-push tag ${TAG} to remote? This will overwrite the existing remote tag." \
+    || die "Aborted."
+  FORCE_PUSH_TAG=true
+else
+  FORCE_PUSH_TAG=false
+fi
+
+# ─── 5. Create local tag ──────────────────────────────────────────────────────
+HEAD_COMMIT=$(git rev-parse HEAD)
+HEAD_SHORT=$(git rev-parse --short HEAD)
+
+info "Creating tag ${BOLD}${TAG}${NC} → ${HEAD_SHORT} ($(git log -1 --format='%s'))"
+git tag -a "$TAG" -m "Release ${TAG}"
+success "Tag ${TAG} created locally."
+echo ""
+
+# ─── 6. Push tag to remote ────────────────────────────────────────────────────
+info "Pushing tag ${BOLD}${TAG}${NC} to ${REMOTE}…"
+if [[ "$FORCE_PUSH_TAG" == true ]]; then
+  git push "$REMOTE" "$TAG" --force
+  warn "Tag ${TAG} force-pushed to ${REMOTE}."
+else
+  git push "$REMOTE" "$TAG"
+  success "Tag ${TAG} pushed to ${REMOTE}."
+fi
+
+echo ""
+echo -e "${GREEN}${BOLD}Release ${TAG} is live!${NC}"
+echo ""
+echo -e "  Module path : ${CYAN}github.com/reitmas32/rkit@${TAG}${NC}"
+echo -e "  Install via : ${CYAN}go get github.com/reitmas32/rkit@${TAG}${NC}"
