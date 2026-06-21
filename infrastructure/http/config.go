@@ -8,8 +8,18 @@ import (
 
 // Config holds the configuration for the HTTP client.
 type Config struct {
-	// Timeout is the default timeout for requests (in seconds)
+	// Timeout is the default per-request timeout in seconds.
+	//   >  0  use this many seconds.
+	//   == 0  use DefaultTimeoutSeconds (secure default; avoids an unbounded client).
+	//   <  0  explicit opt-in to no timeout.
 	Timeout int
+
+	// MaxResponseBytes caps how many bytes are read from a response body,
+	// protecting against memory exhaustion from oversized or malicious responses.
+	//   >  0  reject bodies larger than this many bytes (ErrResponseTooLarge).
+	//   == 0  use DefaultMaxResponseBytes.
+	//   <  0  explicit opt-in to unlimited (not recommended).
+	MaxResponseBytes int64
 
 	// BaseURL is an optional base URL that will be prepended to all requests
 	BaseURL string
@@ -53,10 +63,19 @@ type Config struct {
 	RetryableMethods []string
 }
 
+const (
+	// DefaultTimeoutSeconds is the per-request timeout applied when Config.Timeout is 0.
+	DefaultTimeoutSeconds = 30
+	// DefaultMaxResponseBytes is the response body cap applied when
+	// Config.MaxResponseBytes is 0 (10 MiB).
+	DefaultMaxResponseBytes int64 = 10 << 20
+)
+
 // DefaultConfig returns a default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Timeout:              30, // 30 seconds default timeout
+		Timeout:              DefaultTimeoutSeconds,
+		MaxResponseBytes:     DefaultMaxResponseBytes,
 		BaseURL:              "",
 		DefaultHeaders:       make(map[string]string),
 		Transport:            nil, // Uses http.DefaultTransport

@@ -98,12 +98,13 @@ func (c *Client) Do(ctx *customctx.CustomContext, req *corehttp.Request) (*coreh
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
 		}
 
-		// Convert response
+		// Convert response. The body is wrapped so reads beyond
+		// MaxResponseBytes fail with ErrResponseTooLarge.
 		resp := &corehttp.Response{
 			StatusCode:    httpResp.StatusCode,
 			Status:        httpResp.Status,
 			Headers:       make(map[string]string),
-			Body:          httpResp.Body,
+			Body:          newLimitedBody(httpResp.Body, c.config.MaxResponseBytes),
 			ContentLength: httpResp.ContentLength,
 		}
 
