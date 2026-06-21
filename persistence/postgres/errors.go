@@ -12,4 +12,10 @@ var (
 	ErrorConvertModelToJSON = kerrors.NewKError("Error converting model to JSON", 500, nil)
 	ErrorConvertJSONToMap   = kerrors.NewKError("Error converting JSON to map", 500, nil)
 	ErrorConvertMapToModel  = kerrors.NewKError("Error converting map to model", 500, nil)
+
+	// ErrorInvalidFieldName is returned when a filter/sort field is not a safe
+	// identifier or is not permitted by the repository's FieldPolicy. The
+	// rejected field and the reason are attached as metadata so logs make the
+	// cause obvious. This guards against SQL injection via column identifiers.
+	ErrorInvalidFieldName = kerrors.NewValidation("invalid or not-allowed filter/sort field", nil)
 )

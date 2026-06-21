@@ -3,6 +3,7 @@ package mongodb
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/reitmas32/rkit/core/customctx"
@@ -35,6 +36,12 @@ func (r *MongoRepository[E, M]) Matching(
 		cc.Logger().Error(ErrorPageableRequired.Error())
 		cc.AddError(ErrorPageableRequired)
 		return result.Err[[]E](ErrorPageableRequired)
+	}
+
+	if vErr := r.validateCriteria(crit, pageable); vErr != nil {
+		cc.Logger().Error(vErr.Detail())
+		cc.AddError(vErr)
+		return result.Err[[]E](vErr)
 	}
 
 	filter := buildFilter(crit.Filters)
@@ -72,6 +79,12 @@ func (r *MongoRepository[E, M]) MatchingWithTotal(
 		cc.Logger().Error(ErrorPageableRequired.Error())
 		cc.AddError(ErrorPageableRequired)
 		return result.Err[MatchingResult[E]](ErrorPageableRequired)
+	}
+
+	if vErr := r.validateCriteria(crit, pageable); vErr != nil {
+		cc.Logger().Error(vErr.Detail())
+		cc.AddError(vErr)
+		return result.Err[MatchingResult[E]](vErr)
 	}
 
 	filter := buildFilter(crit.Filters)
@@ -205,7 +218,12 @@ func decodeCursor[E contracts.IEntity, M contracts.IModel](
 
 // likeToRegex converts a SQL LIKE pattern (%foo%) to a MongoDB regex pattern (.*foo.*).
 func likeToRegex(pattern string) string {
-	pattern = strings.ReplaceAll(pattern, "%", ".*")
-	pattern = strings.ReplaceAll(pattern, "_", ".")
-	return pattern
+	// Escape all regex metacharacters first so a user-supplied value cannot
+	// inject a regular expression (e.g. a catastrophic-backtracking ReDoS that
+	// would stall MongoDB). QuoteMeta leaves the SQL LIKE wildcards %/_ intact,
+	// so they can then be translated to their regex equivalents.
+	escaped := regexp.QuoteMeta(pattern)
+	escaped = strings.ReplaceAll(escaped, "%", ".*")
+	escaped = strings.ReplaceAll(escaped, "_", ".")
+	return escaped
 }
