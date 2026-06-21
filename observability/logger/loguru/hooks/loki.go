@@ -3,6 +3,7 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,9 +33,20 @@ type LokiBufferedHook struct {
 	// URL is the full Loki push endpoint, e.g. http://loki:3100/loki/api/v1/push
 	URL string
 
-	// BatchSize is how many logs trigger an immediate POST flush.
-	// If BatchSize <= 0, it defaults to 50.
+	// BatchSize is how many buffered logs trigger an immediate POST flush.
+	// If BatchSize <= 0, it defaults to DefaultBatchSize.
 	BatchSize int
+
+	// MaxBufferSize caps the number of buffered entries. When the buffer would
+	// exceed it (typically because Loki is unreachable and flushes keep failing),
+	// the oldest entries are dropped so memory stays bounded. A value <= 0 means
+	// unbounded (not recommended). Drops are counted (see Dropped) and reported
+	// through OnError.
+	MaxBufferSize int
+
+	// Timeout is the HTTP timeout applied to each push request.
+	// If <= 0, DefaultTimeout is used.
+	Timeout time.Duration
 
 	// BaseLabels are added to every stream (e.g., app/env/service).
 	BaseLabels map[string]string
@@ -42,16 +54,21 @@ type LokiBufferedHook struct {
 	// Optional headers (e.g. X-Scope-OrgID, Authorization).
 	Headers map[string]string
 
-	// Optional: if true, add entry.Data["caller"] as a Loki label (high cardinality risk).
+	// OnError, if set, is called with any flush error (network/non-2xx) and with a
+	// notice whenever entries are dropped due to MaxBufferSize. It replaces stdout
+	// debug printing; if nil, failures are silent (Flush still returns the error).
+	OnError func(error)
+
+	// IncludeCallerAsLabel: add entry.Data["caller"] as a Loki label (high cardinality risk).
 	IncludeCallerAsLabel bool
 
-	// Optional: if true, include entry.Data serialized into the log line as JSON.
+	// IncludeFieldsInLine: include entry.Data serialized into the log line as JSON.
 	IncludeFieldsInLine bool
 
-	client *http.Client
-
-	mu     sync.Mutex
-	buffer []lokiEntry
+	client  *http.Client
+	mu      sync.Mutex
+	buffer  []lokiEntry
+	dropped int64
 }
 
 // lokiEntry is the internal buffered representation.
@@ -62,33 +79,42 @@ type lokiEntry struct {
 	Fields logrus.Fields
 }
 
-// NewLokiBufferedHook creates a buffered Loki hook.
+// Defaults applied by NewLokiBufferedHook (all fields remain configurable).
+const (
+	// DefaultBatchSize is used when BatchSize <= 0.
+	DefaultBatchSize = 50
+	// DefaultMaxBufferSize bounds the buffer to avoid unbounded memory growth
+	// when Loki is unreachable.
+	DefaultMaxBufferSize = 10000
+	// DefaultTimeout is the per-push HTTP timeout when Timeout <= 0.
+	DefaultTimeout = 5 * time.Second
+)
+
+// NewLokiBufferedHook creates a buffered Loki hook with safe, overridable
+// defaults. After construction you may tune any exported field (MaxBufferSize,
+// Timeout, OnError, Headers, ...) before adding the hook to a logger.
+//
 // url: full push endpoint.
-// batchSize: number of logs per batch (default 50 if <= 0).
+// batchSize: number of logs per batch (DefaultBatchSize if <= 0).
 // baseLabels: fixed labels for all streams.
 func NewLokiBufferedHook(url string, batchSize int, baseLabels map[string]string) *LokiBufferedHook {
 	if batchSize <= 0 {
-		batchSize = 50
+		batchSize = DefaultBatchSize
 	}
-	if baseLabels == nil {
-		baseLabels = map[string]string{}
+	cp := make(map[string]string, len(baseLabels))
+	for k, v := range baseLabels {
+		cp[k] = v
 	}
 
 	return &LokiBufferedHook{
-		URL:       url,
-		BatchSize: batchSize,
-		BaseLabels: func() map[string]string {
-			cp := make(map[string]string, len(baseLabels))
-			for k, v := range baseLabels {
-				cp[k] = v
-			}
-			return cp
-		}(),
-		Headers: map[string]string{},
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-		},
-		buffer: make([]lokiEntry, 0, batchSize),
+		URL:           url,
+		BatchSize:     batchSize,
+		MaxBufferSize: DefaultMaxBufferSize,
+		Timeout:       DefaultTimeout,
+		BaseLabels:    cp,
+		Headers:       map[string]string{},
+		client:        &http.Client{},
+		buffer:        make([]lokiEntry, 0, batchSize),
 	}
 }
 
@@ -97,93 +123,134 @@ func (h *LokiBufferedHook) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
-// Fire implements logrus.Hook.
-func (h *LokiBufferedHook) Fire(e *logrus.Entry) error {
+// Dropped returns the total number of entries dropped because the buffer reached
+// MaxBufferSize (typically while Loki was unreachable).
+func (h *LokiBufferedHook) Dropped() int64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.dropped
+}
 
+// Fire implements logrus.Hook. It appends the entry under the lock and, once the
+// batch size is reached, flushes. The HTTP POST happens outside the lock, so a
+// slow or unreachable Loki never blocks the goroutines that are logging.
+func (h *LokiBufferedHook) Fire(e *logrus.Entry) error {
+	h.mu.Lock()
 	h.buffer = append(h.buffer, lokiEntry{
-		Time:  e.Time,
-		Level: e.Level.String(),
-		Msg:   e.Message,
-		Fields: func() logrus.Fields {
-			// Copy map to avoid mutation issues
-			cp := make(logrus.Fields, len(e.Data))
-			for k, v := range e.Data {
-				cp[k] = v
-			}
-			return cp
-		}(),
+		Time:   e.Time,
+		Level:  e.Level.String(),
+		Msg:    e.Message,
+		Fields: copyFields(e.Data),
 	})
+	h.enforceCapLocked()
+	full := len(h.buffer) >= h.BatchSize
+	h.mu.Unlock()
 
-	if len(h.buffer) >= h.BatchSize {
-		// Best-effort flush; keep buffer if it fails.
-		_ = h.flushLocked()
+	if full {
+		_ = h.flush() // best-effort; errors are surfaced via OnError
 	}
-
 	return nil
 }
 
-// Flush triggers a manual flush (best-effort).
+// Flush sends any buffered entries to Loki (best-effort). It is safe to call at
+// the end of a request or on shutdown, and it does not hold the lock during the
+// network call.
 func (h *LokiBufferedHook) Flush() error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.flushLocked()
+	return h.flush()
 }
 
-// flushLocked sends current buffer to Loki.
+// enforceCapLocked drops the oldest entries when the buffer exceeds MaxBufferSize.
 // Caller must hold h.mu.
-func (h *LokiBufferedHook) flushLocked() error {
+func (h *LokiBufferedHook) enforceCapLocked() {
+	if h.MaxBufferSize <= 0 || len(h.buffer) <= h.MaxBufferSize {
+		return
+	}
+	drop := len(h.buffer) - h.MaxBufferSize
+	h.buffer = append(h.buffer[:0], h.buffer[drop:]...)
+	h.dropped += int64(drop)
+	if h.OnError != nil {
+		h.OnError(fmt.Errorf("loki hook: buffer full (max %d), dropped %d oldest entries", h.MaxBufferSize, drop))
+	}
+}
+
+// flush snapshots the buffer under the lock, releases the lock, then POSTs the
+// batch. On failure the batch is re-queued in front of newer entries (respecting
+// MaxBufferSize) so it is retried on the next flush.
+func (h *LokiBufferedHook) flush() error {
+	h.mu.Lock()
 	if len(h.buffer) == 0 {
+		h.mu.Unlock()
 		return nil
 	}
 	if h.URL == "" {
+		h.mu.Unlock()
 		return errors.New("loki hook: URL is empty")
 	}
+	batch := h.buffer
+	h.buffer = make([]lokiEntry, 0, h.BatchSize)
+	h.mu.Unlock()
 
-	logCount := len(h.buffer)
-	flushTime := time.Now()
-	fmt.Printf("[loki] flushing %d logs at %s to %s\n", logCount, flushTime.Format(time.RFC3339), h.URL)
-
-	payload := h.buildPayload(h.buffer)
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		fmt.Printf("[loki] flush failed before request: %v\n", err)
+	if err := h.send(batch); err != nil {
+		h.mu.Lock()
+		h.buffer = append(batch, h.buffer...)
+		h.enforceCapLocked()
+		h.mu.Unlock()
+		if h.OnError != nil {
+			h.OnError(err)
+		}
 		return err
 	}
+	return nil
+}
 
-	req, err := http.NewRequest(http.MethodPost, h.URL, bytes.NewReader(body))
+// send POSTs a batch to Loki. It neither holds the lock nor touches the buffer.
+func (h *LokiBufferedHook) send(batch []lokiEntry) error {
+	body, err := json.Marshal(h.buildPayload(batch))
 	if err != nil {
-		fmt.Printf("[loki] flush failed creating request: %v\n", err)
-		return err
+		return fmt.Errorf("loki hook: marshal payload: %w", err)
+	}
+
+	timeout := h.Timeout
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.URL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("loki hook: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range h.Headers {
 		req.Header.Set(k, v)
 	}
 
-	resp, err := h.client.Do(req)
+	client := h.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		// keep buffer, let next flush retry
-		fmt.Printf("[loki] flush failed sending %d logs to %s: %v\n", logCount, h.URL, err)
-		return err
+		return fmt.Errorf("loki hook: post %d entries to %s: %w", len(batch), h.URL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// read small body for debugging
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
-		// keep buffer
-		err := errors.New("loki hook: non-2xx response: " + resp.Status + " body=" + string(b))
-		fmt.Printf("[loki] flush failed sending %d logs to %s: status=%s body=%s\n", logCount, h.URL, resp.Status, string(b))
-		return err
+		return fmt.Errorf("loki hook: non-2xx from %s: %s body=%s", h.URL, resp.Status, string(b))
 	}
-
-	// success: clear buffer
-	h.buffer = h.buffer[:0]
-	fmt.Printf("[loki] flush succeeded sending %d logs to %s: status=%s\n", logCount, h.URL, resp.Status)
 	return nil
+}
+
+// copyFields returns a copy of the logrus fields so later mutation of the entry
+// cannot race with buffered data.
+func copyFields(in logrus.Fields) logrus.Fields {
+	cp := make(logrus.Fields, len(in))
+	for k, v := range in {
+		cp[k] = v
+	}
+	return cp
 }
 
 // buildPayload groups entries by labels into Loki streams.
