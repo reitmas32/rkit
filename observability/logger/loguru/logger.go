@@ -91,7 +91,10 @@ func (l *Logger) Debug(message string, args ...any) {
 		if fieldsMap := l.fields.ToFields(); len(fieldsMap) > 0 {
 			entry = entry.WithFields(fieldsMap)
 		}
-		entry.Debug(message)
+		// Format fields in message
+		fields := l.fields.Format()
+		msg := fmt.Sprintf("%s | %s", fields, message)
+		entry.Debug(msg)
 	} else {
 		entry.Debug(message)
 	}
@@ -109,7 +112,10 @@ func (l *Logger) Info(message string, args ...any) {
 		if fieldsMap := l.fields.ToFields(); len(fieldsMap) > 0 {
 			entry = entry.WithFields(fieldsMap)
 		}
-		entry.Info(message)
+		// Format fields in message
+		fields := l.fields.Format()
+		msg := fmt.Sprintf("%s | %s", fields, message)
+		entry.Info(msg)
 	} else {
 		entry.Info(message)
 	}
@@ -127,7 +133,10 @@ func (l *Logger) Warn(message string, args ...any) {
 		if fieldsMap := l.fields.ToFields(); len(fieldsMap) > 0 {
 			entry = entry.WithFields(fieldsMap)
 		}
-		entry.Warn(message)
+		// Format fields in message
+		fields := l.fields.Format()
+		msg := fmt.Sprintf("%s | %s", fields, message)
+		entry.Warn(msg)
 	} else {
 		entry.Warn(message)
 	}
@@ -145,7 +154,10 @@ func (l *Logger) Error(message string, args ...any) {
 		if fieldsMap := l.fields.ToFields(); len(fieldsMap) > 0 {
 			entry = entry.WithFields(fieldsMap)
 		}
-		entry.Error(message)
+		// Format fields in message
+		fields := l.fields.Format()
+		msg := fmt.Sprintf("%s | %s", fields, message)
+		entry.Error(msg)
 	} else {
 		entry.Error(message)
 	}
@@ -163,7 +175,10 @@ func (l *Logger) Fatal(message string, args ...any) {
 		if fieldsMap := l.fields.ToFields(); len(fieldsMap) > 0 {
 			entry = entry.WithFields(fieldsMap)
 		}
-		entry.Fatal(message)
+		// Format fields in message
+		fields := l.fields.Format()
+		msg := fmt.Sprintf("%s | %s", fields, message)
+		entry.Fatal(msg)
 	} else {
 		entry.Fatal(message)
 	}
@@ -181,7 +196,10 @@ func (l *Logger) Panic(message string, args ...any) {
 		if fieldsMap := l.fields.ToFields(); len(fieldsMap) > 0 {
 			entry = entry.WithFields(fieldsMap)
 		}
-		entry.Panic(message)
+		// Format fields in message
+		fields := l.fields.Format()
+		msg := fmt.Sprintf("%s | %s", fields, message)
+		entry.Panic(msg)
 	} else {
 		entry.Panic(message)
 	}

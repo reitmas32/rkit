@@ -2,13 +2,15 @@ package loguru
 
 import (
 	"bytes"
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/sirupsen/logrus"
 )
 
 // CustomFormatter implements logrus.Formatter with the required format:
-// DATE_TIME | LEVEL | MESSAGE
+// DATE_TIME | LEVEL | FILE.FUNCTION:LINE | [config fields] | MESSAGE
 type CustomFormatter struct {
 	TimestampFormat string
 	Colorable       bool
@@ -37,6 +39,12 @@ func (f *CustomFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 	f.writeColored(&b, level, levelColor, f.Colorable)
 	b.WriteString(" | ")
 
+	// FILE.FUNCTION:LINE
+	callerInfo := f.getCallerInfo(entry)
+	b.WriteString(callerInfo)
+	b.WriteString(" | ")
+
+	// MESSAGE (already contains the config fields from logger methods)
 	b.WriteString(entry.Message)
 
 	b.WriteByte('\n')
@@ -73,4 +81,28 @@ func (f *CustomFormatter) writeColored(b *bytes.Buffer, text, color string, useC
 	} else {
 		b.WriteString(text)
 	}
+}
+
+// getCallerInfo extracts file, function, and line information.
+// It first checks if a "caller" field was set manually (from logger methods),
+// otherwise falls back to logrus's caller information.
+func (f *CustomFormatter) getCallerInfo(entry *logrus.Entry) string {
+	// First, try to get caller from entry's Data (set by logger methods)
+	if caller, ok := entry.Data["caller"].(string); ok {
+		return caller
+	}
+
+	// Fallback: try to get from entry's caller (logrus sets this when SetReportCaller(true))
+	if entry.HasCaller() && entry.Caller != nil {
+		file := filepath.Base(entry.Caller.File)
+		function := entry.Caller.Function
+		// Extract just the function name (without package path)
+		if idx := strings.LastIndex(function, "."); idx >= 0 {
+			function = function[idx+1:]
+		}
+		line := entry.Caller.Line
+		return fmt.Sprintf("%s.%s:%d", file, function, line)
+	}
+
+	return "unknown.unknown:0"
 }
