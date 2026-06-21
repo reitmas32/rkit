@@ -1,0 +1,212 @@
+# rkit — full reference for LLMs
+
+> General-purpose Go library (`github.com/reitmas32/rkit`, Go 1.25+) with base
+> utilities for microservices: structured errors, a generic Result type, an
+> error-accumulating context, generic repositories, an event bus, and a
+> structured logger with a batched Grafana Loki hook.
+
+Install: `go get github.com/reitmas32/rkit`. Import packages by full path. Every
+package has a `doc.go` comment and runnable `Example` functions on pkg.go.dev.
+This file expands `llms.txt` with API summaries and copy-pasteable snippets; the
+authoritative, version-pinned reference is https://pkg.go.dev/github.com/reitmas32/rkit.
+
+---
+
+## core/kerrors — structured errors
+
+Error type with `Message`, `Code int`, `Metadata map[string]any` and `Cause error`.
+`Error()` returns the message; `Unwrap()` returns the cause, so `errors.Is` /
+`errors.Unwrap` work.
+
+- `NewKError(message string, code int, metadata map[string]any) *KError`
+- `NewKErrorWithCause(message string, code int, metadata map[string]any, cause error) *KError`
+- `(*KError).WithCause(cause error) *KError`
+
+```go
+err := kerrors.NewKError("user not found", 404, map[string]any{"user_id": "u-123"})
+dbErr := errors.New("connection timeout")
+wrapped := kerrors.NewKErrorWithCause("failed to save user", 500, nil, dbErr)
+errors.Is(wrapped, dbErr) // true
+```
+
+## core/result — functional error handling
+
+Generic `Result[T]` inspired by Rust's `Result<T, E>`.
+
+- Constructors: `Ok[T](value T)`, `Err[T](*kerrors.KError)`, `Empty[T]()`, `NewOkResult`, `NewErrResult`.
+- Methods: `IsOk() bool`, `IsEmpty() bool`, `Value() T`, `Error() error`, `ToKError() *kerrors.KError`.
+
+```go
+func divide(a, b int) result.Result[float64] {
+    if b == 0 {
+        return result.Err[float64](kerrors.NewKError("division by zero", 400, nil))
+    }
+    return result.Ok(float64(a) / float64(b))
+}
+
+r := divide(10, 2)
+if r.IsOk() { fmt.Println(r.Value()) } // 5
+```
+
+## core/customctx — error-accumulating context
+
+Implements `context.Context` while collecting structured errors and carrying a logger.
+
+- `New(parent context.Context) *CustomContext`, `NewWithValues(parent, values)`.
+- `AddError(*kerrors.KError) *kerrors.KError`, `HasErrors() bool`, `Errors() []WrapError`, `FirstError()`, `LastError()`, `Clear()`.
+- `WithLogger(logger.ILogger) *CustomContext`, `Logger() logger.ILogger`, `Context() context.Context`.
+
+```go
+cc := customctx.New(context.Background())
+cc.AddError(kerrors.NewKError("validation failed", 400, nil))
+if cc.HasErrors() {
+    for _, e := range cc.Errors() { _ = e }
+}
+```
+
+## core/logger — logging contract
+
+- `ILogger` interface: `Debug/Info/Warn/Error/Fatal/Panic(message string, args ...any)`.
+- `SimpleLogger`: `NewSimpleLogger(level string) *SimpleLogger` (debug|info|warn|error).
+- Levels: `ParseLevel`, `IsLoggable`, `IsLoggableLevel`.
+
+```go
+log := logger.NewSimpleLogger("info")
+log.Info("server started on port %d", 8080)
+```
+
+## core/eventbus — event bus contracts
+
+Interfaces only: `Event`, `Message`, `Publisher`, `Consumer`, `EventBus`,
+`HandlerFunc func(ctx context.Context, event Event) error`, `Metadata map[string]string`.
+Implementations live under `infrastructure/eventbus`.
+
+## core/http — HTTP contracts + typed helpers
+
+Request/response contracts plus generics that (de)serialize JSON:
+`PostTyped[Req, Res]`, `PutTyped`, `PatchTyped`, and `TypedResponse[T]` with
+`IsSuccess()`, `IsClientError()`, `IsServerError()`. Use with the
+`infrastructure/http` client.
+
+## core/types — domain identifiers
+
+`DomainID` encodes a module code and entity code alongside a UUID.
+
+- `NewDomainID(moduleHex, entityHex string) (DomainID, error)`
+- `ParseDomainID(s string) (DomainID, error)`
+
+```go
+id, err := types.NewDomainID("02", "01")
+```
+
+## infrastructure/http — HTTP client
+
+`net/http`-based client with retries, logging and customctx integration.
+
+- `NewClient(Config) *Client`, `DefaultConfig() Config`.
+- `Get/Post/Put/Patch/Delete/Head/Options(ctx *customctx.CustomContext, url string, ...)`.
+- `NewCustomContextFromGin(ginCtx) *customctx.CustomContext`.
+
+```go
+cc := customctx.New(context.Background())
+client := infrahttp.NewClient(infrahttp.DefaultConfig())
+resp, err := client.Get(cc, "https://example.com/health")
+```
+
+## infrastructure/eventbus — implementations
+
+- `inmemory.NewEventBus() *EventBus` — in-process; ideal for tests/dev.
+- `rabbit.NewEventBus(config Config, eventFactory func(eventName string) eventbus.Event) (*EventBus, error)` — RabbitMQ, incl. delayed delivery. See `examples/infrastructure/eventbus/rabbit`.
+
+## infrastructure/dtos — gin DTO binding
+
+`GetDTO[K]`, `GetDTOWithResponse[K]`, `GetDTONonDestructive[K]`,
+`GetAuthToken`, `GetAuthTokenWithEarlyResponse` — bind/validate request bodies and
+extract bearer tokens, integrating with `result` and `customctx`.
+
+## persistence/contracts — storage abstractions
+
+`IEntity` (domain entity) and `IModel` (DB row), plus `EntityToModel`,
+`ModelToEntity`, `ToJSON`, `FromJSON`. Repositories are written against these so
+domain code stays storage-agnostic.
+
+## persistence/criteria — composable filters
+
+`Filter{Field FilterField, Operator Operator, Value any}` grouped by `Filters`.
+Operators: `OperatorEqual`, `OperatorNotEqual`, `OperatorGreaterThan`,
+`OperatorGreaterEqual`, `OperatorLessThan`, `OperatorLessEqual`, `OperatorLike`,
+`OperatorNotLike`, `OperatorIn`, `OperatorNotIn`.
+
+```go
+filters := criteria.NewFilters([]criteria.Filter{
+    {Field: "status", Operator: criteria.OperatorEqual, Value: "active"},
+    {Field: "age", Operator: criteria.OperatorGreaterThan, Value: 18},
+})
+```
+
+## persistence/pagination — pages
+
+- `NewPageRequest(page, size int) PageRequest` (page is 0-indexed); `Offset()`, `Limit()`.
+- `Pageable` adds `Sort{Field, Direction}` with `SortDirectionASC`/`SortDirectionDESC`.
+- `PageResult[T]{Content, TotalElements, TotalPages, Page, Size, IsFirst, IsLast, HasNext, HasPrevious}`; `NewPageResult(content, totalElements, pageRequest)`.
+- `CriteriaPageable` combines a `criteria.Criteria` with a `Pageable`.
+
+```go
+req := pagination.NewPageRequest(0, 20)
+page := pagination.NewPageResult(items, total, req)
+```
+
+## persistence/models — base entity
+
+`Entity` (embeddable: ID, timestamps, soft-delete, `ToJSON`) and mutation
+notifications: `OnMutationFunc`, `NotifyMutation`.
+
+```go
+type UserEntity struct {
+    models.Entity
+    Email string
+}
+```
+
+## persistence/inmemory, postgres, mongodb — repositories
+
+Generic repositories over `contracts`, typed by entity and model. Standard ops:
+Save, GetByID, UpdateByFields, DeleteByID, criteria-based matching.
+
+- `inmemory.NewInMemoryMapRepository[E, M](onMutation models.OnMutationFunc)`.
+- `postgres.PostgresRepository[E, M]{Connection: db}` (GORM).
+- `mongodb` repository (go.mongodb.org/mongo-driver/v2).
+
+```go
+repo := &postgres.PostgresRepository[UserEntity, UserModel]{Connection: db}
+repo.Save(cc, entity)
+```
+
+## observability/logger/loguru — structured logger
+
+logrus-based implementation of `core/logger.ILogger`. Console format:
+`DATE_TIME | LEVEL | FILE.FUNCTION:LINE | [fields] | MESSAGE`. Optional ANSI colors.
+
+- `NewLogger(fields Fields) *Logger`, `NewLoggerWithConfig(fields, Config{Level, Colorable})`.
+- `AddHook(logrus.Hook)`, `SetConfig`, `GetLogrusLogger`.
+- `fields`: `HTTPFileds`, `WSFields` (UpdateOne/UpdateAll/ToFields/Format).
+- `hooks.NewLokiBufferedHook(url string, batchSize int, baseLabels map[string]string) *LokiBufferedHook` with `Flush() error`. Buffers entries and POSTs to Loki's `/loki/api/v1/push` once batchSize (default 50) is reached; call Flush() for partial batches (e.g. at the end of a request). Failed POSTs keep the buffer.
+
+```go
+f := &fields.HTTPFileds{}
+f.UpdateOne("method", "GET")
+f.UpdateOne("path", "/api/v1/users")
+
+log := loguru.NewLogger(f)
+
+hook := hooks.NewLokiBufferedHook(
+    "http://localhost:3100/loki/api/v1/push", 50,
+    map[string]string{"app": "my-service", "environment": "production"},
+)
+log.AddHook(hook)
+defer hook.Flush()
+
+log.Info("request received")
+```
+
+A mock Loki server for local development is in `mock/loki/`.

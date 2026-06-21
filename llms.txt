@@ -1,0 +1,49 @@
+# rkit
+
+> General-purpose Go library (module `github.com/reitmas32/rkit`, Go 1.25+) with base utilities for building microservices and backend applications: structured errors, a generic Result type, an error-accumulating context, generic repositories, an event bus, and an observability logger with a batched Grafana Loki hook.
+
+rkit is a single Go module organized into `core/`, `infrastructure/`, `persistence/` and `observability/` packages. Every package ships a godoc comment and runnable `Example` functions visible on pkg.go.dev. Import packages directly, e.g. `import "github.com/reitmas32/rkit/core/result"`. The canonical, version-pinned API reference is pkg.go.dev; the links below point there.
+
+## Core packages
+
+- [core/kerrors](https://pkg.go.dev/github.com/reitmas32/rkit/core/kerrors): Structured errors with numeric code, metadata and cause chaining (errors.Is / errors.Unwrap aware). Constructors: NewKError, NewKErrorWithCause.
+- [core/result](https://pkg.go.dev/github.com/reitmas32/rkit/core/result): Generic Result[T] for functional error handling. Ok, Err, Empty; methods IsOk, IsEmpty, Value, Error, ToKError.
+- [core/customctx](https://pkg.go.dev/github.com/reitmas32/rkit/core/customctx): A context.Context that accumulates structured errors across a flow and carries a logger. New, AddError, HasErrors, Errors, WithLogger, Logger.
+- [core/logger](https://pkg.go.dev/github.com/reitmas32/rkit/core/logger): ILogger contract, SimpleLogger and log levels (ParseLevel, IsLoggable).
+- [core/eventbus](https://pkg.go.dev/github.com/reitmas32/rkit/core/eventbus): Transport-agnostic event bus contracts: Event, Message, Publisher, Consumer, EventBus, HandlerFunc.
+- [core/http](https://pkg.go.dev/github.com/reitmas32/rkit/core/http): HTTP request/response contracts plus generic typed helpers (PostTyped, PutTyped, PatchTyped, TypedResponse).
+- [core/types](https://pkg.go.dev/github.com/reitmas32/rkit/core/types): DomainID, a module/entity-encoded identifier. NewDomainID, ParseDomainID.
+
+## Infrastructure
+
+- [infrastructure/http](https://pkg.go.dev/github.com/reitmas32/rkit/infrastructure/http): net/http Client with retries, logging and customctx integration. NewClient(DefaultConfig()); Get/Post/Put/Patch/Delete/Head/Options; NewCustomContextFromGin.
+- [infrastructure/eventbus/inmemory](https://pkg.go.dev/github.com/reitmas32/rkit/infrastructure/eventbus/inmemory): In-process event bus for tests and local dev. NewEventBus.
+- [infrastructure/eventbus/rabbit](https://pkg.go.dev/github.com/reitmas32/rkit/infrastructure/eventbus/rabbit): RabbitMQ event bus, including delayed delivery. NewEventBus(config, eventFactory).
+- [infrastructure/dtos](https://pkg.go.dev/github.com/reitmas32/rkit/infrastructure/dtos): Bind and validate gin request DTOs. GetDTO, GetDTOWithResponse, GetDTONonDestructive, GetAuthToken.
+
+## Persistence
+
+- [persistence/contracts](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/contracts): IEntity / IModel abstractions and conversion helpers (EntityToModel, ModelToEntity).
+- [persistence/criteria](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/criteria): Composable, ORM-agnostic query filters. Filter, Operator constants, NewFilters.
+- [persistence/pagination](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/pagination): PageRequest, PageResult[T], Pageable, Sort, CriteriaPageable.
+- [persistence/models](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/models): Base Entity and mutation notifications (OnMutationFunc, NotifyMutation).
+- [persistence/inmemory](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/inmemory): Generic in-memory repository for tests. NewInMemoryMapRepository.
+- [persistence/postgres](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/postgres): Generic GORM/PostgreSQL repository. PostgresRepository[E, M].
+- [persistence/mongodb](https://pkg.go.dev/github.com/reitmas32/rkit/persistence/mongodb): Generic MongoDB repository (mongo-driver/v2).
+
+## Observability
+
+- [observability/logger/loguru](https://pkg.go.dev/github.com/reitmas32/rkit/observability/logger/loguru): Structured logrus logger implementing core/logger.ILogger. Console format `DATE_TIME | LEVEL | FILE.FUNCTION:LINE | [fields] | MESSAGE`. NewLogger, NewLoggerWithConfig, AddHook.
+- [observability/logger/loguru/fields](https://pkg.go.dev/github.com/reitmas32/rkit/observability/logger/loguru/fields): HTTP and WebSocket field sets (HTTPFileds, WSFields).
+- [observability/logger/loguru/hooks](https://pkg.go.dev/github.com/reitmas32/rkit/observability/logger/loguru/hooks): LokiBufferedHook — batched Grafana Loki shipping (default batch 50) with Flush() for partial batches.
+
+## Docs
+
+- [README](https://github.com/reitmas32/rkit/blob/main/README.md): Overview and copy-pasteable quickstart per package.
+- [Per-package guides](https://github.com/reitmas32/rkit/tree/main/docs): Detailed documentation per package.
+- [Runnable examples](https://github.com/reitmas32/rkit/tree/main/examples): Example programs per package.
+
+## Optional
+
+- [llms-full.txt](https://github.com/reitmas32/rkit/blob/main/llms-full.txt): Expanded, single-file version of this index with API summaries and code snippets.
+- [AGENTS.md](https://github.com/reitmas32/rkit/blob/main/AGENTS.md): Instructions for AI agents contributing to the rkit repo itself.

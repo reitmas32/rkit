@@ -1,0 +1,33 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "rkit",
+  "description": "General-purpose Go library with base utilities for microservices: structured errors (kerrors), a generic Result type, an error-accumulating context (customctx), generic repositories, an event bus, and a structured logger with a batched Grafana Loki hook.",
+  "folders": [
+    "core",
+    "infrastructure",
+    "persistence",
+    "observability",
+    "docs"
+  ],
+  "excludeFolders": [
+    "examples",
+    "mock",
+    "scripts"
+  ],
+  "excludeFiles": [
+    "go.sum",
+    "docs/COMPLETE.md"
+  ],
+  "rules": [
+    "rkit is a single Go module: github.com/reitmas32/rkit (Go 1.25+).",
+    "Import packages by full path, e.g. import \"github.com/reitmas32/rkit/core/result\".",
+    "Return *kerrors.KError instead of bare errors; prefer result.Result[T] over (T, error) across layers.",
+    "Functions that accumulate errors take *customctx.CustomContext.",
+    "The structured logger is observability/logger/loguru; ship logs to Loki with hooks.NewLokiBufferedHook and call Flush() to send partial batches.",
+    "Prefer the runnable Example functions and doc.go package comments as the source of truth for API usage."
+  ],
+  "previousVersions": [
+    { "tag": "v0.0.1", "title": "Initial release" },
+    { "tag": "v0.0.2", "title": "Richer console logs (caller + inline fields)" }
+  ]
+}

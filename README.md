@@ -1,69 +1,74 @@
 # rkit
 
-Biblioteca general de Go con utilidades base para construir microservicios y aplicaciones backend. Proporciona abstracciones de dominio, implementaciones de infraestructura y patrones comunes listos para usar.
+General-purpose Go library with base utilities for building microservices and
+backend applications. It provides domain abstractions, infrastructure
+implementations, and ready-to-use common patterns.
 
-```
+```bash
 go get github.com/reitmas32/rkit
 ```
 
-> Requiere Go 1.25+
+> Requires Go 1.25+
 
----
+## Documentation
 
-## Contenido
+- **API reference (godoc):** https://pkg.go.dev/github.com/reitmas32/rkit — every
+  package has a doc comment and runnable `Example` functions.
+- **For AI coding agents:** [`llms.txt`](./llms.txt) (curated index) and
+  [`llms-full.txt`](./llms-full.txt) (expanded content). See [`AGENTS.md`](./AGENTS.md)
+  to work *on* this repo.
+- **Per-package guides:** [`docs/`](./docs).
 
-- [Paquetes del núcleo](#paquetes-del-núcleo)
-  - [kerrors](#kerrors--errores-estructurados)
-  - [result](#result--manejo-funcional-de-errores)
-  - [customctx](#customctx--contexto-personalizado)
-  - [logger](#logger)
-  - [eventbus](#eventbus--bus-de-eventos)
-  - [http](#http--cliente-http)
-  - [types](#types)
-- [Infraestructura](#infraestructura)
-  - [infrastructure/http](#infrastructurehttp)
-  - [infrastructure/eventbus](#infrastructureeventbus)
-- [Persistencia](#persistencia)
-  - [Contratos](#contratos)
-  - [Criteria y Filtros](#criteria-y-filtros)
-  - [Paginación](#paginación)
-  - [persistence/inmemory](#persistenceinmemory)
-  - [persistence/postgres](#persistencepostgres)
-- [Observabilidad](#observabilidad)
+## Package map
 
----
+| Import path | What it gives you |
+|-------------|-------------------|
+| `core/kerrors` | Structured errors: code, metadata, cause chaining |
+| `core/result` | Generic `Result[T]` for functional error handling |
+| `core/customctx` | `context.Context` that accumulates structured errors + logger |
+| `core/logger` | `ILogger` contract + `SimpleLogger` + log levels |
+| `core/eventbus` | Transport-agnostic event bus contracts |
+| `core/http` | HTTP request/response contracts + generic typed helpers |
+| `core/types` | `DomainID` (module/entity-encoded identifiers) |
+| `infrastructure/http` | `net/http` client with retries, logging, customctx |
+| `infrastructure/eventbus/inmemory` | In-process event bus (tests/dev) |
+| `infrastructure/eventbus/rabbit` | RabbitMQ event bus (incl. delayed delivery) |
+| `infrastructure/dtos` | Bind + validate gin request DTOs |
+| `observability/logger/loguru` | Structured logrus logger + fields + Loki hook |
+| `persistence/contracts` | `IEntity` / `IModel` + conversion helpers |
+| `persistence/criteria` | Composable, ORM-agnostic query filters |
+| `persistence/pagination` | `PageRequest` / `PageResult[T]` / `Pageable` |
+| `persistence/models` | Base `Entity` + mutation notifications |
+| `persistence/inmemory` | Generic in-memory repository |
+| `persistence/postgres` | Generic GORM/PostgreSQL repository |
+| `persistence/mongodb` | Generic MongoDB repository |
 
-## Paquetes del núcleo
+## Core packages
 
-### `kerrors` — Errores estructurados
-
-Extiende el manejo de errores de Go con código, metadata y encadenamiento.
+### `kerrors` — structured errors
 
 ```go
 import "github.com/reitmas32/rkit/core/kerrors"
 
-// Error simple
-err := kerrors.NewKError("recurso no encontrado", 404, nil)
+// Simple error with a code
+err := kerrors.NewKError("resource not found", 404, nil)
 
-// Con metadata de contexto
-err := kerrors.NewKError("validación fallida", 400, map[string]any{
+// With contextual metadata
+err = kerrors.NewKError("validation failed", 400, map[string]any{
     "field":      "email",
     "request_id": "req-abc-123",
 })
 
-// Con causa subyacente
+// Wrapping an underlying cause (errors.Is / errors.Unwrap aware)
 dbErr := errors.New("connection timeout")
-err := kerrors.NewKErrorWithCause("error al guardar usuario", 500, nil, dbErr)
-
-// Encadenamiento compatible con errors.Is / errors.Unwrap
+err = kerrors.NewKErrorWithCause("failed to save user", 500, nil, dbErr)
 errors.Is(err, dbErr) // true
 ```
 
----
+### `result` — functional error handling
 
-### `result` — Manejo funcional de errores
-
-Tipo genérico inspirado en el `Result<T, E>` de Rust. Evita el patrón `value, err` en cascada.
+Generic type inspired by Rust's `Result<T, E>`; avoids the cascading
+`value, err` pattern.
 
 ```go
 import (
@@ -73,35 +78,31 @@ import (
 
 func divide(a, b int) result.Result[float64] {
     if b == 0 {
-        return result.Err[float64](kerrors.NewKError("división por cero", 400, nil))
+        return result.Err[float64](kerrors.NewKError("division by zero", 400, nil))
     }
     return result.Ok(float64(a) / float64(b))
 }
 
 r := divide(10, 2)
 if r.IsOk() {
-    fmt.Println(r.Value()) // 5.0
-} else {
-    fmt.Println(r.Error())
+    fmt.Println(r.Value()) // 5
 }
 ```
 
-| Función | Descripción |
-|---------|-------------|
-| `result.Ok(value)` | Result exitoso |
-| `result.Err[T](kerr)` | Result con error |
-| `result.Empty[T]()` | Result sin valor ni error |
-| `.IsOk()` | Verifica si es exitoso |
-| `.IsEmpty()` | Verifica si está vacío |
-| `.Value()` | Retorna el valor |
-| `.Error()` | Retorna el error como `error` |
-| `.ToKError()` | Retorna el error como `*KError` |
+| Function / method | Description |
+|-------------------|-------------|
+| `result.Ok(value)` | Successful result |
+| `result.Err[T](kerr)` | Result carrying an error |
+| `result.Empty[T]()` | Result with neither value nor error |
+| `.IsOk()` / `.IsEmpty()` | State checks |
+| `.Value()` | The value (zero value if not Ok) |
+| `.Error()` | The error as a standard `error` |
+| `.ToKError()` | The error as `*kerrors.KError` |
 
----
+### `customctx` — error-accumulating context
 
-### `customctx` — Contexto personalizado
-
-Implementación de `context.Context` que acumula errores estructurados a lo largo de un flujo, con tracking del call site y soporte de logger.
+Implements `context.Context` while collecting structured errors across a flow,
+with call-site tracking and logger support.
 
 ```go
 import (
@@ -110,67 +111,41 @@ import (
     "github.com/reitmas32/rkit/core/kerrors"
 )
 
-ctx := customctx.New(context.Background())
+cc := customctx.New(context.Background())
 
-// Acumular errores sin detener la ejecución
-ctx.AddError(kerrors.NewKError("validación fallida", 400, nil))
+// Accumulate errors without stopping execution
+cc.AddError(kerrors.NewKError("validation failed", 400, nil))
 
-// Consultar errores acumulados
-if ctx.HasErrors() {
-    errs := ctx.GetErrors()
-    // ...
+if cc.HasErrors() {
+    for _, e := range cc.Errors() {
+        _ = e
+    }
 }
-
-// Almacenar valores con clave string
-ctx.SetValue("request_id", "req-abc-123")
-reqID := customctx.ExtractValue[string](ctx, "request_id")
-
-// Compatible con context.WithTimeout, etc.
-ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-defer cancel()
 ```
 
----
-
 ### `logger`
-
-Contrato de logger y una implementación simple integrable en cualquier componente.
 
 ```go
 import "github.com/reitmas32/rkit/core/logger"
 
-log := logger.NewSimpleLogger()
-log.Info("servidor iniciado", map[string]any{"port": 8080})
-log.Error("fallo inesperado", map[string]any{"err": err})
+log := logger.NewSimpleLogger("info") // debug | info | warn | error
+log.Info("server started on port %d", 8080)
 ```
 
-Niveles disponibles: `Debug`, `Info`, `Warn`, `Error`.
+### `eventbus`
 
----
-
-### `eventbus` — Bus de eventos
-
-Contratos para publicar y consumir eventos de forma desacoplada.
+Contracts to publish/consume events in a decoupled way; implementations live in
+`infrastructure/eventbus`.
 
 ```go
 import "github.com/reitmas32/rkit/core/eventbus"
 
-// Implementar Publisher
-type MyPublisher struct{}
-func (p *MyPublisher) Publish(ctx context.Context, event eventbus.Event) error { ... }
-
-// Implementar Consumer
-type MyConsumer struct{}
-func (c *MyConsumer) Consume(ctx context.Context, handler eventbus.HandlerFunc) error { ... }
+type Publisher interface {
+    Publish(ctx context.Context, event eventbus.Event) error
+}
 ```
 
-Implementaciones incluidas en `infrastructure/eventbus`.
-
----
-
-### `http` — Cliente HTTP
-
-Contratos y helpers para hacer peticiones HTTP con respuestas tipadas.
+### `http` — typed client helpers
 
 ```go
 import (
@@ -179,221 +154,124 @@ import (
     infrahttp "github.com/reitmas32/rkit/infrastructure/http"
 )
 
-ctx := customctx.New(context.Background())
+cc := customctx.New(context.Background())
 client := infrahttp.NewClient(infrahttp.DefaultConfig())
 
-type Character struct {
-    ID   int    `json:"id"`
-    Name string `json:"name"`
-}
-
-resp, err := corehttp.GetTyped[Character](
-    client,
-    ctx,
-    "https://rickandmortyapi.com/api/character/1",
-    corehttp.WithHeader("Accept", "application/json"),
-)
-
-if err == nil && resp.IsSuccess() {
-    fmt.Println(resp.Body.Name)
-}
+resp, err := client.Get(cc, "https://example.com/health")
+// Or use the generic typed helpers: corehttp.PostTyped[Req, Res](client, cc, url, body)
 ```
-
----
 
 ### `types`
 
 ```go
 import "github.com/reitmas32/rkit/core/types"
 
-id := types.NewUUIDx()         // genera nuevo UUID
-id, err := types.ParseUUIDx(s) // parsea desde string
+id, err := types.NewDomainID("02", "01") // module 02, entity 01
+parsed, err := types.ParseDomainID(id.String())
 ```
 
----
-
-## Infraestructura
+## Infrastructure
 
 ### `infrastructure/http`
-
-Cliente HTTP construido sobre `net/http` con soporte para reintentos, logging y contexto personalizado.
 
 ```go
 import infrahttp "github.com/reitmas32/rkit/infrastructure/http"
 
-config := infrahttp.DefaultConfig()
-config.Timeout = 10 * time.Second
-config.MaxRetries = 3
-
-client := infrahttp.NewClient(config)
+cfg := infrahttp.DefaultConfig()
+cfg.Timeout = 10 * time.Second
+client := infrahttp.NewClient(cfg)
 ```
 
 ### `infrastructure/eventbus`
 
-**In-memory** (útil para tests y desarrollo local):
-
 ```go
 import "github.com/reitmas32/rkit/infrastructure/eventbus/inmemory"
 
-bus := inmemory.NewEventBus()
+bus := inmemory.NewEventBus() // in-process; great for tests
 ```
 
-**RabbitMQ**:
+RabbitMQ: `rabbit.NewEventBus(cfg, eventFactory)` — see
+`examples/infrastructure/eventbus/rabbit` for publisher/consumer/delayed flows.
+
+## Persistence
+
+### Criteria & filters
 
 ```go
-import "github.com/reitmas32/rkit/infrastructure/eventbus/rabbit"
+import "github.com/reitmas32/rkit/persistence/criteria"
 
-bus, err := rabbit.NewEventBus(rabbit.Config{
-    URL:      "amqp://guest:guest@localhost:5672/",
-    Exchange: "my.exchange",
+filters := criteria.NewFilters([]criteria.Filter{
+    {Field: "status", Operator: criteria.OperatorEqual, Value: "active"},
+    {Field: "age", Operator: criteria.OperatorGreaterThan, Value: 18},
 })
 ```
 
----
-
-## Persistencia
-
-### Contratos
-
-```go
-import "github.com/reitmas32/rkit/persistence/contracts"
-
-// IEntity — entidad de dominio con ID
-// IModel  — modelo de base de datos
-```
-
-### Criteria y Filtros
-
-Sistema de filtros componibles para construir queries sin acoplar al ORM.
-
-```go
-import (
-    "github.com/reitmas32/rkit/persistence/criteria"
-)
-
-c := criteria.New().
-    AddFilter(criteria.NewFilter("status", criteria.EQ, "active")).
-    AddFilter(criteria.NewFilter("age", criteria.GT, 18))
-```
-
-### Paginación
+### Pagination
 
 ```go
 import "github.com/reitmas32/rkit/persistence/pagination"
 
-req := pagination.NewPageRequest(1, 20,
-    pagination.NewSort("created_at", pagination.DESC),
-)
-
-// El repositorio retorna:
-// PageResult[T] con Items, Total, Page, PageSize, TotalPages
+req := pagination.NewPageRequest(0, 20) // page (0-indexed), size
+// Repositories return PageResult[T]{Content, TotalElements, TotalPages, ...}
 ```
 
-### `persistence/inmemory`
-
-Repositorio genérico en memoria, ideal para tests y prototipado.
+### Repositories
 
 ```go
-import "github.com/reitmas32/rkit/persistence/inmemory"
+import "github.com/reitmas32/rkit/persistence/postgres"
 
-repo := inmemory.NewRepository[MyEntity, MyModel]()
-
-repo.Save(ctx, entity)
-r := repo.GetByID(ctx, id)
-repo.DeleteByID(ctx, id)
+repo := &postgres.PostgresRepository[UserEntity, UserModel]{Connection: db}
+repo.Save(cc, entity)
+r := repo.GetByID(cc, id)
 ```
 
-### `persistence/postgres`
+In-memory equivalent for tests: `inmemory.NewInMemoryMapRepository[E, M](onMutation)`.
 
-Repositorio genérico sobre GORM para PostgreSQL.
+## Observability — Loguru (Logrus + Loki)
 
-```go
-import (
-    "github.com/reitmas32/rkit/persistence/postgres"
-    "gorm.io/driver/postgres"
-    "gorm.io/gorm"
-)
-
-db, _ := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-
-repo := &postgres.PostgresRepository[MyEntity, MyModel]{
-    Connection: db,
-}
-
-repo.Save(ctx, entity)
-r := repo.GetByID(ctx, id)
-```
-
----
-
-## Observabilidad
-
-### Loguru (Logrus + Loki)
-
-Logger con formato estructurado, hook para Grafana Loki y campos HTTP/WebSocket predefinidos.
+Structured logger with caller info, predefined HTTP/WebSocket fields and a
+batched Grafana Loki hook.
 
 ```go
 import (
     "github.com/reitmas32/rkit/observability/logger/loguru"
     "github.com/reitmas32/rkit/observability/logger/loguru/fields"
+    "github.com/reitmas32/rkit/observability/logger/loguru/hooks"
 )
 
-log := loguru.New(loguru.Config{
-    Level:  "info",
-    Format: "json",
-})
+f := &fields.HTTPFileds{}
+f.UpdateOne("method", "GET")
+f.UpdateOne("path", "/api/v1/users")
 
-log.WithFields(fields.HTTP(r)).Info("request received")
-log.WithFields(fields.WS(conn)).Info("websocket connected")
+log := loguru.NewLogger(f)
+
+// Ship logs to Loki in batches of 50; flush the remainder at request end.
+hook := hooks.NewLokiBufferedHook(
+    "http://localhost:3100/loki/api/v1/push", 50,
+    map[string]string{"app": "my-service", "environment": "production"},
+)
+log.AddHook(hook)
+defer hook.Flush()
+
+log.Info("request received")
 ```
 
-**Hook para Loki** (Grafana):
+Console format: `DATE_TIME | LEVEL | FILE.FUNCTION:LINE | [fields] | MESSAGE`.
+A mock Loki server for local development lives in `mock/loki/`.
 
-```go
-import "github.com/reitmas32/rkit/observability/logger/loguru/hooks"
-
-log.AddHook(hooks.NewLoki(hooks.LokiConfig{
-    URL:    "http://localhost:3100",
-    Labels: map[string]string{"app": "my-service"},
-}))
-```
-
-Para levantar un servidor Loki mock local, ver `mock/loki/`.
-
----
-
-## Estructura del proyecto
+## Project structure
 
 ```
 rkit/
-├── core/
-│   ├── customctx/     # Contexto con acumulación de errores
-│   ├── eventbus/      # Contratos de bus de eventos
-│   ├── http/          # Contratos y tipos HTTP
-│   ├── kerrors/       # Errores estructurados
-│   ├── logger/        # Contrato de logger
-│   ├── result/        # Tipo Result genérico
-│   └── types/         # UUIDx y otros tipos base
-├── infrastructure/
-│   ├── dtos/          # DTOs compartidos
-│   ├── eventbus/      # In-memory y RabbitMQ
-│   └── http/          # Cliente HTTP con reintentos
-├── observability/
-│   └── logger/loguru/ # Logger estructurado + Loki
-├── persistence/
-│   ├── contracts/     # IEntity, IModel
-│   ├── criteria/      # Filtros componibles
-│   ├── inmemory/      # Repositorio en memoria
-│   ├── models/        # Entidad base con mutations
-│   ├── pagination/    # PageRequest / PageResult
-│   └── postgres/      # Repositorio PostgreSQL (GORM)
-├── examples/          # Ejemplos ejecutables por paquete
-├── docs/              # Documentación detallada por paquete
-└── mock/loki/         # Servidor Loki mock para desarrollo
+├── core/            # customctx, eventbus, http, kerrors, logger, result, types
+├── infrastructure/  # dtos, eventbus (inmemory + rabbit), http client
+├── observability/   # logger/loguru (+ fields, hooks, Loki)
+├── persistence/     # contracts, criteria, pagination, models, inmemory, postgres, mongodb
+├── examples/        # runnable examples per package
+├── docs/            # detailed per-package guides
+└── mock/loki/       # mock Loki server for development
 ```
 
----
-
-## Licencia
+## License
 
 MIT
